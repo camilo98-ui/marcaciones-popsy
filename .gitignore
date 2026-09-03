@@ -1,0 +1,4 @@
+popsy-voice-backend/node_modules/
+popsy-voice-backend/.env
+.DS_Store
+Thumbs.db
