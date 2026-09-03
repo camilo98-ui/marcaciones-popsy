@@ -871,6 +871,20 @@
   .close-x{background:none; border:none; color:var(--ink-faint); cursor:pointer; padding:4px; display:flex;}
   .close-x:hover{color:var(--ink);}
 
+  /* ---- Alarma de producto vencido ---- */
+  .vence-alert-icon{
+    width:44px; height:44px; border-radius:50%; background:var(--danger-bg); color:var(--danger);
+    display:flex; align-items:center; justify-content:center; flex:none;
+    animation:venceIconPulse 1.4s ease-in-out infinite;
+  }
+  .vence-alert-icon .icon{ width:22px; height:22px; }
+  @keyframes venceIconPulse{ 0%,100%{ transform:scale(1); opacity:1; } 50%{ transform:scale(1.12); opacity:.72; } }
+  .vence-alert-list{ display:flex; flex-direction:column; gap:2px; max-height:260px; overflow-y:auto; }
+  .vence-alert-row{ padding:11px 0; border-bottom:1px solid var(--border); }
+  .vence-alert-row:last-child{ border-bottom:none; }
+  .vence-alert-row .name{ font-size:13.5px; font-weight:700; color:var(--ink); }
+  .vence-alert-row .meta{ font-size:11.5px; color:var(--ink-faint); font-weight:600; margin-top:2px; }
+
   /* ============ WIZARD ============ */
   /* "Nueva marcación" es la interacción más frecuente de toda la app: en vez de un modal
      centrado, usa un panel que entra desde la derecha y ocupa toda la altura — se siente
@@ -1774,6 +1788,24 @@
   </div>
 </div>
 
+<!-- Alarma de producto vencido: a diferencia del resto de avisos, esta se repite hasta que
+     alguien la reconoce explícitamente (sin botón de cerrar por fuera / clic en el fondo). -->
+<div class="overlay" id="venceAlertOverlay">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="vence-alert-icon" id="venceAlertIcon"></div>
+      <div>
+        <h3>Producto<span id="venceAlertPlural">s</span> vencido<span id="venceAlertPlural2">s</span></h3>
+        <div class="tag" id="venceAlertSub">Requiere atención inmediata</div>
+      </div>
+    </div>
+    <div class="modal-body">
+      <div class="vence-alert-list" id="venceAlertList"></div>
+    </div>
+    <div class="modal-foot"><button class="btn danger-ghost" id="venceAlertOk" style="width:100%; justify-content:center;">Entendido, detener alarma</button></div>
+  </div>
+</div>
+
 <script>
 (function(){
 "use strict";
@@ -2347,6 +2379,7 @@ async function boot(){
   document.getElementById("storeSwitchBtn").innerHTML = icon("store");
   initThemeToggle();
   document.getElementById("menuBtn").innerHTML = icon("menu");
+  document.getElementById("venceAlertIcon").innerHTML = icon("alertTriangle");
   document.getElementById("wizClose").innerHTML = icon("x");
   document.getElementById("detClose").innerHTML = icon("x");
   document.getElementById("traceClose").innerHTML = icon("x");
@@ -2824,6 +2857,7 @@ async function enterStore(slug, name, showToast, overlaysToClose){
   STORE_DATA = data;
   alertedKeys = new Set();
   VoiceService.resetAnnounced();
+  closeVenceAlarm(); // una alarma de la tienda anterior no debe seguir sonando al cambiar de tienda
   updateSidebarFoot();
   renderAll();
   const minDuration = prefersReducedMotion ? 0 : 1900;
@@ -2992,6 +3026,7 @@ function logout(){
   STORE_DATA = { entries:{}, historial:[], counter:0 };
   alertedKeys = new Set();
   VoiceService.resetAnnounced();
+  closeVenceAlarm();
   document.getElementById("storeNameTop").textContent = "Selecciona tienda";
   document.getElementById("inspStore").textContent = "—";
   updateSidebarFoot();
@@ -4978,6 +5013,66 @@ function playTone(kind){
     t += dur*0.9;
   });
 }
+/* Campanada "premium" para la alarma de vencidos: dos notas en tercera menor descendente
+   (E6→C6), cada una con fundamental + armónico ligeramente desafinado (da el "shimmer" de
+   una campana real) + subarmónico para cuerpo, todo pasado por un filtro paso-bajo para que
+   suene redondeado y no como un beep plano — más un carillón que una alarma de horno. */
+function playBellTone(ctx, freq, t, peakGain, dur){
+  const filter = ctx.createBiquadFilter();
+  filter.type = "lowpass"; filter.frequency.value = 3400; filter.Q.value = 0.7;
+  filter.connect(ctx.destination);
+  [1, 2.01, 0.5].forEach((mult, idx)=>{
+    const osc = ctx.createOscillator(), gain = ctx.createGain();
+    osc.type = "sine"; osc.frequency.value = freq*mult;
+    const g = idx===0 ? peakGain : peakGain*(idx===1?0.28:0.35);
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(g, t+0.018);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t+dur);
+    osc.connect(gain); gain.connect(filter);
+    osc.start(t); osc.stop(t+dur+0.05);
+  });
+}
+function playPremiumChime(){
+  if(!soundOn || !userInteracted) return;
+  const ctx = ensureAudio(); if(!ctx) return;
+  const now = ctx.currentTime;
+  [1318.51, 1046.5].forEach((freq, i)=>{ // E6 → C6
+    const t = now + i*0.16;
+    playBellTone(ctx, freq, t, 0.24, 1.0);
+    playBellTone(ctx, freq, t+0.14, 0.07, 0.7); // eco suave, para dar profundidad
+  });
+}
+/* ===================== ALARMA DE PRODUCTO VENCIDO (persiste hasta reconocerla) =====================
+   A diferencia del resto de avisos (toast, voz), esta se repite cada pocos segundos hasta que
+   alguien la reconoce explícitamente con el botón del modal — pensada para que un producto
+   vencido nunca pase desapercibido en el piso de la tienda. */
+let venceAlarmItems = [];
+let venceAlarmInterval = null;
+function openVenceAlarm(items){
+  venceAlarmItems = venceAlarmItems.concat(items);
+  renderVenceAlarmList();
+  document.getElementById("venceAlertOverlay").classList.add("show");
+  playPremiumChime();
+  if(!venceAlarmInterval) venceAlarmInterval = setInterval(playPremiumChime, 3200);
+}
+function renderVenceAlarmList(){
+  const list = document.getElementById("venceAlertList");
+  list.innerHTML = venceAlarmItems.map(({p,entry})=>`
+    <div class="vence-alert-row">
+      <div class="name">${escapeHTML(p.name)}</div>
+      <div class="meta">${[entry.lote?`Lote ${escapeHTML(entry.lote)}`:"", entry.codigoRecipiente?escapeHTML(entry.codigoRecipiente):""].filter(Boolean).join(" · ")}</div>
+    </div>
+  `).join("");
+  const n = venceAlarmItems.length;
+  document.getElementById("venceAlertPlural").textContent = n===1 ? "" : "s";
+  document.getElementById("venceAlertPlural2").textContent = n===1 ? "" : "s";
+  document.getElementById("venceAlertSub").textContent = n===1 ? "Requiere atención inmediata" : `${n} productos requieren atención inmediata`;
+}
+function closeVenceAlarm(){
+  venceAlarmItems = [];
+  closeOverlay("venceAlertOverlay");
+  if(venceAlarmInterval){ clearInterval(venceAlarmInterval); venceAlarmInterval = null; }
+}
 function checkAlerts(){
   if(!STORE_SLUG) return;
   let firedVencido=false, firedHoy=false;
@@ -4991,7 +5086,7 @@ function checkAlerts(){
       else if(st.code==="hoy" && !alertedKeys.has(key+"::hoy")){ alertedKeys.add(key+"::hoy"); firedHoy=true; newHoy.push({p,entry}); }
     });
   });
-  if(firedVencido){ playTone("vencido"); toast("Hay insumos vencidos que requieren atención.", "danger"); }
+  if(firedVencido){ openVenceAlarm(newVencidos); toast("Hay insumos vencidos que requieren atención.", "danger"); }
   else if(firedHoy){ playTone("hoy"); toast("Hay insumos que vencen hoy.", "warn"); }
   // Voz: reutiliza el mismo "alertedKeys" de arriba como anti-repetición — un producto que ya
   // fue anunciado como vencido/por vencer no se vuelve a anunciar en cada tick de 45s.
@@ -5373,6 +5468,8 @@ function wireEvents(){
 
   document.getElementById("confirmNo").onclick = ()=>closeOverlay("confirmOverlay");
   document.getElementById("confirmYes").onclick = ()=>{ closeOverlay("confirmOverlay"); if(confirmCb) confirmCb(); confirmCb=null; };
+
+  document.getElementById("venceAlertOk").onclick = closeVenceAlarm;
 
   // La pantalla de login (storeOverlay) no se cierra con click-afuera ni Escape: no es "cancelable".
   [...document.querySelectorAll(".overlay")].forEach(ov=>{
