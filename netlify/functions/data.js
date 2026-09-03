@@ -15,7 +15,7 @@
    patrón (nunca rutas de archivo reales, nunca datos fuera de este formato).
    ========================================================================= */
 
-const { getStore } = require("@netlify/blobs");
+const { connectLambda, getStore } = require("@netlify/blobs");
 
 const STORE_NAME = "popsy-data";
 // Solo "data/<algo>.json" con slugs seguros — igual de estricto que slugify() en el frontend.
@@ -23,6 +23,12 @@ const VALID_PATH = /^data\/[a-zA-Z0-9_-]+\.json$/;
 const MAX_BODY_BYTES = 2 * 1024 * 1024; // 2MB — de sobra para el historial de una tienda
 
 exports.handler = async (event) => {
+  // Esta function usa la firma clásica de Lambda (exports.handler), donde Netlify Blobs
+  // NO autoconfigura el entorno solo — hay que conectarlo explícitamente con el evento
+  // recibido antes de pedir cualquier store. Sin esto, getStore() falla con
+  // "MissingBlobsEnvironmentError" aunque el sitio sí tenga Blobs disponible.
+  connectLambda(event);
+
   const path = event.queryStringParameters && event.queryStringParameters.path;
 
   if (!path || !VALID_PATH.test(path)) {
