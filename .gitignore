@@ -1,4 +1,6 @@
+node_modules/
 popsy-voice-backend/node_modules/
 popsy-voice-backend/.env
+.netlify/
 .DS_Store
 Thumbs.db

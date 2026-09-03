@@ -1,0 +1,9 @@
+{
+  "name": "marcaciones-popsy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Marcaciones Popsy — sitio estático (marcaciones-popsy.html) + Netlify Functions para datos compartidos entre dispositivos.",
+  "dependencies": {
+    "@netlify/blobs": "^8.1.0"
+  }
+}
