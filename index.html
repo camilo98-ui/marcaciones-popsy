@@ -884,6 +884,28 @@
   .vence-alert-row:last-child{ border-bottom:none; }
   .vence-alert-row .name{ font-size:13.5px; font-weight:700; color:var(--ink); }
   .vence-alert-row .meta{ font-size:11.5px; color:var(--ink-faint); font-weight:600; margin-top:2px; }
+  /* Modo alarma: fondo que destella en rojo, borde rojo grueso, botón grande y una sacudida
+     del modal en cada ráfaga de sonido. Con "reducir movimiento" no hay destello ni sacudida,
+     solo el rojo fijo. */
+  #venceAlertOverlay{ z-index:200; }
+  #venceAlertOverlay.alarming.show{ background:rgba(194,59,50,.30); animation:venceFlash 1s steps(1,end) infinite; }
+  #venceAlertOverlay[data-level="3"].alarming.show{ animation-duration:.6s; }
+  @keyframes venceFlash{ 0%{ background:rgba(194,59,50,.42); } 50%{ background:rgba(194,59,50,.12); } }
+  #venceAlertOverlay .modal{ border:2px solid var(--danger); box-shadow:0 0 0 6px rgba(194,59,50,.18), var(--shadow-lg); }
+  #venceAlertOverlay .modal-head h3{ color:var(--danger); font-size:20px; }
+  #venceAlertOverlay .vence-alert-icon{ width:52px; height:52px; background:var(--danger); color:#fff; }
+  #venceAlertOverlay .vence-alert-icon .icon{ width:26px; height:26px; }
+  #venceAlertOverlay .modal.alarm-hit{ animation:venceShake .45s cubic-bezier(.36,.07,.19,.97) both; }
+  @keyframes venceShake{
+    10%,90%{ transform:translateX(-2px); } 20%,80%{ transform:translateX(4px); }
+    30%,50%,70%{ transform:translateX(-7px); } 40%,60%{ transform:translateX(7px); }
+  }
+  .btn.vence-stop{ width:100%; justify-content:center; min-height:52px; font-size:15px; font-weight:800;
+    background:var(--danger); border-color:var(--danger); color:#fff; }
+  .btn.vence-stop:hover{ filter:brightness(1.08); }
+  @media (prefers-reduced-motion:reduce){
+    #venceAlertOverlay.alarming.show{ animation:none; background:rgba(194,59,50,.30); }
+  }
 
   /* ============ WIZARD ============ */
   /* "Nueva marcación" es la interacción más frecuente de toda la app: en vez de un modal
@@ -1790,19 +1812,19 @@
 
 <!-- Alarma de producto vencido: a diferencia del resto de avisos, esta se repite hasta que
      alguien la reconoce explícitamente (sin botón de cerrar por fuera / clic en el fondo). -->
-<div class="overlay" id="venceAlertOverlay">
+<div class="overlay" id="venceAlertOverlay" role="alertdialog" aria-modal="true" aria-labelledby="venceAlertTitle">
   <div class="modal">
     <div class="modal-head">
       <div class="vence-alert-icon" id="venceAlertIcon"></div>
       <div>
-        <h3>Producto<span id="venceAlertPlural">s</span> vencido<span id="venceAlertPlural2">s</span></h3>
+        <h3 id="venceAlertTitle">Producto<span id="venceAlertPlural">s</span> vencido<span id="venceAlertPlural2">s</span></h3>
         <div class="tag" id="venceAlertSub">Requiere atención inmediata</div>
       </div>
     </div>
     <div class="modal-body">
       <div class="vence-alert-list" id="venceAlertList"></div>
     </div>
-    <div class="modal-foot"><button class="btn danger-ghost" id="venceAlertOk" style="width:100%; justify-content:center;">Entendido, detener alarma</button></div>
+    <div class="modal-foot"><button class="btn vence-stop" id="venceAlertOk">Entendido, detener alarma</button></div>
   </div>
 </div>
 
@@ -2293,8 +2315,15 @@ function liberarRecipiente(codigo){
   r.estado = "disponible"; r.productId = null; r.entryId = null;
 }
 
-document.addEventListener("click", ()=>{ userInteracted = true; }, {once:true});
-document.addEventListener("keydown", ()=>{ userInteracted = true; }, {once:true});
+/* Los navegadores no dejan sonar audio hasta el primer toque/tecla. Se "desbloquea" el audio
+   en ese primer gesto (incluido touch en tablets) para que la alarma de vencidos pueda sonar
+   aunque salte minutos después sin que nadie esté tocando la pantalla. */
+function unlockAudio(){
+  userInteracted = true;
+  const ctx = ensureAudio();
+  if(ctx && ctx.state==="suspended"){ try{ ctx.resume(); }catch(e){} }
+}
+["pointerdown","touchstart","click","keydown"].forEach(ev=>document.addEventListener(ev, unlockAudio, {once:true, passive:true}));
 
 function effectiveVU(product){
   const ov = CONFIG_OVERRIDES[product.id];
@@ -4551,12 +4580,15 @@ function renderAdminPreferencias(c){
     <div class="admin-row">
       <div class="main">
         <div class="t1">Alertas de sonido</div>
-        <div class="t2">Reproduce un aviso cuando un producto vence o está por vencer.</div>
+        <div class="t2">Alarma fuerte cuando un producto vence (sigue sonando hasta que alguien la detiene) y aviso corto cuando está por vencer.</div>
       </div>
-      <button class="btn sm" id="prefSoundBtn">
-        <span id="prefSoundIcon"></span>
-        <span id="prefSoundState">${soundOn ? "Activadas" : "Silenciadas"}</span>
-      </button>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end;">
+        <button class="btn sm" id="prefAlarmTestBtn">▶ Probar alarma</button>
+        <button class="btn sm" id="prefSoundBtn">
+          <span id="prefSoundIcon"></span>
+          <span id="prefSoundState">${soundOn ? "Activadas" : "Silenciadas"}</span>
+        </button>
+      </div>
     </div>
 
     <h3 class="admin-section-h" style="margin-top:26px;">🔊 Asistente de voz</h3>
@@ -4604,6 +4636,8 @@ function renderAdminPreferencias(c){
     document.getElementById("prefSoundState").textContent = soundOn ? "Activadas" : "Silenciadas";
     toast(soundOn ? "Alertas de sonido activadas." : "Alertas de sonido silenciadas.", "ok");
   };
+  // Una sola ráfaga en nivel 2 (patrón + sirena), para escuchar cómo suena sin esperar un vencido.
+  document.getElementById("prefAlarmTestBtn").onclick = ()=>{ unlockAudio(); playAlarmBurst(2, true); };
   wireVoiceSettingsUI();
 }
 /* Pinta y conecta todo el panel de "Asistente de voz" dentro de Configuración: toggle
@@ -5013,47 +5047,122 @@ function playTone(kind){
     t += dur*0.9;
   });
 }
-/* Campanada "premium" para la alarma de vencidos: dos notas en tercera menor descendente
-   (E6→C6), cada una con fundamental + armónico ligeramente desafinado (da el "shimmer" de
-   una campana real) + subarmónico para cuerpo, todo pasado por un filtro paso-bajo para que
-   suene redondeado y no como un beep plano — más un carillón que una alarma de horno. */
-function playBellTone(ctx, freq, t, peakGain, dur){
-  const filter = ctx.createBiquadFilter();
-  filter.type = "lowpass"; filter.frequency.value = 3400; filter.Q.value = 0.7;
-  filter.connect(ctx.destination);
-  [1, 2.01, 0.5].forEach((mult, idx)=>{
-    const osc = ctx.createOscillator(), gain = ctx.createGain();
-    osc.type = "sine"; osc.frequency.value = freq*mult;
-    const g = idx===0 ? peakGain : peakGain*(idx===1?0.28:0.35);
-    gain.gain.setValueAtTime(0.0001, t);
-    gain.gain.exponentialRampToValueAtTime(g, t+0.018);
-    gain.gain.exponentialRampToValueAtTime(0.0001, t+dur);
-    osc.connect(gain); gain.connect(filter);
-    osc.start(t); osc.stop(t+dur+0.05);
-  });
-}
-function playPremiumChime(){
-  if(!soundOn || !userInteracted) return;
-  const ctx = ensureAudio(); if(!ctx) return;
-  const now = ctx.currentTime;
-  [1318.51, 1046.5].forEach((freq, i)=>{ // E6 → C6
-    const t = now + i*0.16;
-    playBellTone(ctx, freq, t, 0.24, 1.0);
-    playBellTone(ctx, freq, t+0.14, 0.07, 0.7); // eco suave, para dar profundidad
-  });
-}
 /* ===================== ALARMA DE PRODUCTO VENCIDO (persiste hasta reconocerla) =====================
-   A diferencia del resto de avisos (toast, voz), esta se repite cada pocos segundos hasta que
-   alguien la reconoce explícitamente con el botón del modal — pensada para que un producto
-   vencido nunca pase desapercibido en el piso de la tienda. */
+   Antes era un carillón suave que en el ruido del piso de la tienda pasaba desapercibido.
+   Ahora es una alarma de verdad, con el patrón que usan los equipos médicos para prioridad
+   alta (3 pulsos + 2 pulsos), timbre agudo y "cortante" en la banda donde el oído es más
+   sensible (1–2,5 kHz), y escalamiento si nadie la reconoce:
+     · Nivel 1 (0–15 s):  patrón 3+2 cada 2,6 s.
+     · Nivel 2 (15–40 s): patrón 3+2 + sirena ascendente, más fuerte, cada 2,2 s.
+     · Nivel 3 (+40 s):   sirena + patrón, máximo volumen, cada 1,6 s.
+   Además: el fondo destella en rojo, el modal se sacude en cada ráfaga, el celular vibra y la
+   pestaña parpadea con "⚠ PRODUCTO VENCIDO" para que se note aunque estén en otra pestaña.
+   Solo se detiene con el botón "Entendido, detener alarma" (ni Escape ni clic afuera). */
+let alarmBus = null;
+function getAlarmBus(ctx){
+  if(alarmBus && alarmBus.ctx===ctx) return alarmBus;
+  // Compresor + ganancia maestra: permite subir el volumen percibido sin distorsionar.
+  const comp = ctx.createDynamicsCompressor();
+  comp.threshold.value = -14; comp.knee.value = 4; comp.ratio.value = 10;
+  comp.attack.value = 0.002; comp.release.value = 0.1;
+  const master = ctx.createGain(); master.gain.value = 1;
+  master.connect(comp); comp.connect(ctx.destination);
+  alarmBus = {ctx, master};
+  return alarmBus;
+}
+/* Un pulso de alarma: onda cuadrada + diente de sierra ligeramente desafinada (da ese
+   "batido" áspero que no se confunde con una notificación normal), con ataque inmediato. */
+function alarmPulse(ctx, out, freq, t, dur, peak){
+  const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 5200; lp.Q.value = 0.9;
+  const env = ctx.createGain();
+  env.gain.setValueAtTime(0.0001, t);
+  env.gain.linearRampToValueAtTime(peak, t+0.006);
+  env.gain.setValueAtTime(peak, t+dur-0.03);
+  env.gain.linearRampToValueAtTime(0.0001, t+dur);
+  lp.connect(env); env.connect(out);
+  [["square",1,0.55],["sawtooth",1.006,0.45]].forEach(([type,mult,mix])=>{
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.value = freq*mult; g.gain.value = mix;
+    o.connect(g); g.connect(lp);
+    o.start(t); o.stop(t+dur+0.02);
+  });
+}
+/* Sirena ascendente (whoop): barrido de 650 Hz a 1.700 Hz — el sonido de "emergencia". */
+function alarmSweep(ctx, out, t, dur, peak){
+  const o = ctx.createOscillator(), env = ctx.createGain();
+  const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 4200;
+  o.type = "sawtooth";
+  o.frequency.setValueAtTime(650, t);
+  o.frequency.exponentialRampToValueAtTime(1700, t+dur);
+  env.gain.setValueAtTime(0.0001, t);
+  env.gain.linearRampToValueAtTime(peak, t+0.04);
+  env.gain.setValueAtTime(peak, t+dur-0.05);
+  env.gain.linearRampToValueAtTime(0.0001, t+dur);
+  o.connect(lp); lp.connect(env); env.connect(out);
+  o.start(t); o.stop(t+dur+0.02);
+}
+/* Una ráfaga completa según el nivel. Devuelve la duración en segundos. */
+function playAlarmBurst(level, force){
+  if(!force && (!soundOn || !userInteracted)) return 0;
+  const ctx = ensureAudio(); if(!ctx) return 0;
+  if(ctx.state==="suspended"){ try{ ctx.resume(); }catch(e){} }
+  const {master} = getAlarmBus(ctx);
+  // Si el asistente de voz está anunciando el producto vencido, la alarma baja para que se
+  // entienda el mensaje hablado (y vuelve a subir en la siguiente ráfaga).
+  let duck = 1;
+  try{ if(typeof VoiceService!=="undefined" && VoiceService.isSpeaking) duck = 0.3; }catch(e){}
+  const peak = (level>=3 ? 0.5 : level===2 ? 0.42 : 0.34) * duck;
+  let t = ctx.currentTime + 0.02;
+  if(level>=2){ alarmSweep(ctx, master, t, 0.55, peak*0.8); alarmSweep(ctx, master, t+0.6, 0.55, peak*0.8); t += 1.25; }
+  // Patrón de prioridad alta: 3 pulsos rápidos, pausa, 2 pulsos.
+  const HI = 1568, MID = 1175; // G6 / D6
+  [[HI,0],[MID,0.17],[HI,0.34],[MID,0.66],[HI,0.83]].forEach(([f,dt])=>alarmPulse(ctx, master, f, t+dt, 0.13, peak));
+  return (t - ctx.currentTime) + 1.0;
+}
+const VENCE_TITLE = "⚠️ PRODUCTO VENCIDO";
 let venceAlarmItems = [];
-let venceAlarmInterval = null;
+let venceAlarmTimer = null;
+let venceAlarmStart = 0;
+let venceTitleTimer = null, venceTitleOrig = null;
+function venceAlarmLevel(){
+  const secs = (Date.now() - venceAlarmStart)/1000;
+  return secs >= 40 ? 3 : secs >= 15 ? 2 : 1;
+}
+function venceAlarmTick(){
+  if(!venceAlarmItems.length) return;
+  const level = venceAlarmLevel();
+  playAlarmBurst(level);
+  const ov = document.getElementById("venceAlertOverlay");
+  ov.dataset.level = String(level);
+  // Sacudida del modal sincronizada con cada ráfaga (se reinicia la animación).
+  const m = ov.querySelector(".modal");
+  if(m && !prefersReducedMotion){ m.classList.remove("alarm-hit"); void m.offsetWidth; m.classList.add("alarm-hit"); }
+  if(navigator.vibrate){ try{ navigator.vibrate(level>=3 ? [500,120,500,120,900] : [350,150,350,150,350]); }catch(e){} }
+  const next = level>=3 ? 1600 : level===2 ? 2200 : 2600;
+  venceAlarmTimer = setTimeout(venceAlarmTick, level>=2 ? next+1200 : next);
+}
+function startTitleFlash(){
+  if(venceTitleTimer) return;
+  venceTitleOrig = document.title;
+  let on = false;
+  venceTitleTimer = setInterval(()=>{ on = !on; document.title = on ? VENCE_TITLE : venceTitleOrig; }, 800);
+}
+function stopTitleFlash(){
+  if(venceTitleTimer){ clearInterval(venceTitleTimer); venceTitleTimer = null; }
+  if(venceTitleOrig!==null){ document.title = venceTitleOrig; venceTitleOrig = null; }
+}
 function openVenceAlarm(items){
+  const wasActive = venceAlarmItems.length>0;
   venceAlarmItems = venceAlarmItems.concat(items);
   renderVenceAlarmList();
-  document.getElementById("venceAlertOverlay").classList.add("show");
-  playPremiumChime();
-  if(!venceAlarmInterval) venceAlarmInterval = setInterval(playPremiumChime, 3200);
+  const ov = document.getElementById("venceAlertOverlay");
+  ov.classList.add("show", "alarming");
+  startTitleFlash();
+  if(!wasActive){
+    venceAlarmStart = Date.now();
+    if(venceAlarmTimer) clearTimeout(venceAlarmTimer);
+    venceAlarmTick();
+  }
 }
 function renderVenceAlarmList(){
   const list = document.getElementById("venceAlertList");
@@ -5066,12 +5175,16 @@ function renderVenceAlarmList(){
   const n = venceAlarmItems.length;
   document.getElementById("venceAlertPlural").textContent = n===1 ? "" : "s";
   document.getElementById("venceAlertPlural2").textContent = n===1 ? "" : "s";
-  document.getElementById("venceAlertSub").textContent = n===1 ? "Requiere atención inmediata" : `${n} productos requieren atención inmediata`;
+  document.getElementById("venceAlertSub").textContent = n===1 ? "Retíralo y regístralo como descarte" : `${n} productos · retíralos y regístralos como descarte`;
 }
 function closeVenceAlarm(){
   venceAlarmItems = [];
+  if(venceAlarmTimer){ clearTimeout(venceAlarmTimer); venceAlarmTimer = null; }
+  if(navigator.vibrate){ try{ navigator.vibrate(0); }catch(e){} }
+  stopTitleFlash();
+  const ov = document.getElementById("venceAlertOverlay");
+  ov.classList.remove("alarming");
   closeOverlay("venceAlertOverlay");
-  if(venceAlarmInterval){ clearInterval(venceAlarmInterval); venceAlarmInterval = null; }
 }
 function checkAlerts(){
   if(!STORE_SLUG) return;
@@ -5473,11 +5586,11 @@ function wireEvents(){
 
   // La pantalla de login (storeOverlay) no se cierra con click-afuera ni Escape: no es "cancelable".
   [...document.querySelectorAll(".overlay")].forEach(ov=>{
-    if(ov.id==="storeOverlay") return;
+    if(ov.id==="storeOverlay" || ov.id==="venceAlertOverlay") return; // la alarma solo se detiene con su botón
     ov.addEventListener("click", e=>{ if(e.target===ov) closeOverlay(ov.id); });
   });
   document.addEventListener("keydown", e=>{
-    if(e.key==="Escape"){ [...document.querySelectorAll(".overlay.show")].forEach(o=>{ if(o.id!=="storeOverlay") closeOverlay(o.id); }); }
+    if(e.key==="Escape"){ [...document.querySelectorAll(".overlay.show")].forEach(o=>{ if(o.id!=="storeOverlay" && o.id!=="venceAlertOverlay") closeOverlay(o.id); }); }
   });
 }
 
